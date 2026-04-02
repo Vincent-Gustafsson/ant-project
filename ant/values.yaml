@@ -1,0 +1,4 @@
+colonyName: "dev"
+
+nginx:
+    replicas: 4
