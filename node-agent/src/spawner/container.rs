@@ -121,7 +121,6 @@ pub async fn list(kwargs: HashMap<String, Value>, docker: &Docker) -> Result<Vec
         .build();
 
     let containers = docker.list_containers(Some(opts)).await?;
-    println!("{containers:#?}");
     containers
         .iter()
         .map(serde_json::to_string)

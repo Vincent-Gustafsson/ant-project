@@ -39,8 +39,8 @@ pub async fn run_executor(docker: Docker) -> Result<()> {
     let executor_name = format!("node-agent-{}", hostname::get()?.to_string_lossy());
     let colony_name = "dev";
     let prvkey = "ba949fa134981372d6da62b6a56f336ab4d843b22c02a4257dcf7d0d73097514";
-    let executor_id = colonyos::crypto::gen_id(prvkey);
-
+    let exec_prvkey = colonyos::crypto::gen_prvkey();
+    let executor_id = colonyos::crypto::gen_id(&exec_prvkey);
     // Generate or load persistent identity
     let identity = load_or_generate_identity()?;
 
@@ -54,7 +54,7 @@ pub async fn run_executor(docker: Docker) -> Result<()> {
     colonyos::approve_executor(colony_name, &executor_name, prvkey).await?;
     println!("Executor registered with pubkey: {}", identity.to_public());
 
-    let result = run_loop(colony_name, prvkey, &identity, &docker).await;
+    let result = run_loop(colony_name, &exec_prvkey, &identity, &docker).await;
 
     println!("Removing executor...");
     colonyos::remove_executor(colony_name, &executor_name, prvkey).await?;
