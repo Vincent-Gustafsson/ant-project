@@ -2,12 +2,13 @@ use sysinfo::{Disks, System};
 
 use crate::metrics::types::{CpuMetrics, DiskMetrics, MemoryMetrics, SystemMetrics};
 
-pub fn collect(sys: &mut System, disks: &mut Disks) -> SystemMetrics {
+pub fn collect(sys: &mut System, disks: &mut Disks, node_name: &str) -> SystemMetrics {
     sys.refresh_cpu_all();
     sys.refresh_memory();
     disks.refresh(true);
 
     SystemMetrics {
+        node_name: node_name.to_string(),
         cpu: collect_cpu(sys),
         memory: collect_memory(sys),
         disks: collect_disks(disks),

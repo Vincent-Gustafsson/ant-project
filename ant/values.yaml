@@ -1,4 +1,1 @@
-colonyName: "dev"
-
-nginx:
-    replicas: 4
+tunnel_token: "eyJhIjoiNzJlZjVmY2Q2NjBjODIyMDAwN2ZmN2Y5OGRhZGZhNzAiLCJ0IjoiNzRiYjcyMGQtY2NkYS00NzMzLThiZTEtZjUyMTkzODNjY2FiIiwicyI6Ik9XWm1NVEEwWXpRdE1UTTJOQzAwTlRFM0xXRm1Nak10Wm1VM1pEWmpZbVZqT1dWbSJ9"

@@ -12,6 +12,9 @@ use crate::metrics::system::collect;
 pub async fn run_metrics_collector(_docker: Docker) -> Result<()> {
     let mut sys = System::new_all();
     let mut disks = Disks::new_with_refreshed_list();
+    let node_name = hostname::get()
+        .map(|h| h.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "unknown".to_string());
 
     // Prime the CPU delta
     sys.refresh_cpu_all();
@@ -23,7 +26,7 @@ pub async fn run_metrics_collector(_docker: Docker) -> Result<()> {
             Local::now().format("[%H:%M:%S]")
         );
 
-        let snapshot = collect(&mut sys, &mut disks);
+        let snapshot = collect(&mut sys, &mut disks, &node_name);
 
         let mut fn_spec = FunctionSpec::new("push_metrics", "metrics-collector", "dev");
         fn_spec.args = vec![serde_json::to_string(&snapshot)?];

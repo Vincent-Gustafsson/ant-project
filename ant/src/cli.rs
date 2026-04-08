@@ -1,4 +1,4 @@
-use crate::commands::{init, install};
+use crate::commands::{init, install, list, remove};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -21,6 +21,10 @@ pub enum Commands {
     Init(init::InitArgs),
     /// Install a package
     Install(install::InstallArgs),
+    /// List deployed packages
+    List(list::ListArgs),
+    /// Remove a deployed package
+    Remove(remove::RemoveArgs),
 }
 
 impl Cli {
@@ -28,6 +32,8 @@ impl Cli {
         match self.command {
             Commands::Init(args) => init::run(args),
             Commands::Install(args) => install::run(args).await,
+            Commands::List(args) => list::run(args).await,
+            Commands::Remove(args) => remove::run(args).await,
         }
     }
 }

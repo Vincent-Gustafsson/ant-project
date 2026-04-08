@@ -14,7 +14,9 @@ struct PackageManifest {
 
 const WORKFLOWS_DIR: &str = ".github/workflows";
 
-const PUBLISH_WORKFLOW: &str = "\
+fn publish_workflow(package_name: &str) -> String {
+    format!(
+        "\
 name: Publish
 on:
   push:
@@ -29,12 +31,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Create archive
-        run: tar -czf /tmp/archive.tar.gz --exclude='.git' .
+        run: |
+          mkdir /tmp/{package_name}
+          cp README.md values.yaml package.yaml /tmp/{package_name}/
+          cp -r templates /tmp/{package_name}/templates
+          tar -czf /tmp/archive.tar.gz -C /tmp {package_name}
       - name: Publish
         uses: ant-pm/publish-action@v1
         with:
           registry_url: https://ant.vinlaro.com/api/packages
-";
+"
+    )
+}
 
 #[derive(Args)]
 pub struct InitArgs {}
@@ -79,7 +87,10 @@ pub fn run(_args: InitArgs) -> Result<()> {
 
     // 7. Create GitHub Actions workflow
     fs::create_dir_all(WORKFLOWS_DIR)?;
-    fs::write(format!("{WORKFLOWS_DIR}/publish.yaml"), PUBLISH_WORKFLOW)?;
+    fs::write(
+        format!("{WORKFLOWS_DIR}/publish.yaml"),
+        publish_workflow(&manifest.name),
+    )?;
 
     Ok(())
 }

@@ -1,37 +1,30 @@
-use crate::spawner::container::{kill, list, spawn};
-use age::{Decryptor, secrecy::ExposeSecret, x25519};
+use crate::spawner::container::{ensure, ensure_stack, kill, list, spawn};
 use anyhow::Result;
 
 use bollard::Docker;
 use colonyos::core::{Executor, Software};
+use crypto_box::SecretKey;
 
-use std::{collections::HashMap, str::FromStr};
 use tokio::signal;
 
 const KEY_PATH: &str = ".colony/node.key";
 
-fn load_or_generate_identity() -> Result<x25519::Identity> {
-    if let Ok(pem) = std::fs::read_to_string(KEY_PATH) {
-        let identity = x25519::Identity::from_str(pem.trim())
-            .map_err(|e| anyhow::anyhow!("failed to parse identity: {e}"))?;
-        println!("Loaded existing identity from {KEY_PATH}");
-        Ok(identity)
+fn load_or_generate_key() -> Result<SecretKey> {
+    if let Ok(hex_str) = std::fs::read_to_string(KEY_PATH) {
+        let bytes: [u8; 32] = hex::decode(hex_str.trim())?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid key length in {KEY_PATH}"))?;
+        println!("Loaded encryption key from {KEY_PATH}");
+        Ok(SecretKey::from(bytes))
     } else {
-        let identity = x25519::Identity::generate();
+        use crypto_box::aead::OsRng;
+        let secret = SecretKey::generate(&mut OsRng);
         if let Some(parent) = std::path::Path::new(KEY_PATH).parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(KEY_PATH, identity.to_string().expose_secret())?;
-        println!("Generated new identity, saved to {KEY_PATH}");
-        Ok(identity)
-    }
-}
-
-fn pubkey_software(identity: &x25519::Identity) -> Software {
-    Software {
-        name: "pubkey".into(),
-        software_type: identity.to_public().to_string(),
-        version: String::new(),
+        std::fs::write(KEY_PATH, hex::encode(secret.to_bytes()))?;
+        println!("Generated encryption key, saved to {KEY_PATH}");
+        Ok(secret)
     }
 }
 
@@ -41,20 +34,22 @@ pub async fn run_executor(docker: Docker) -> Result<()> {
     let prvkey = "ba949fa134981372d6da62b6a56f336ab4d843b22c02a4257dcf7d0d73097514";
     let exec_prvkey = colonyos::crypto::gen_prvkey();
     let executor_id = colonyos::crypto::gen_id(&exec_prvkey);
-    // Generate or load persistent identity
-    let identity = load_or_generate_identity()?;
+
+    let secret_key = load_or_generate_key()?;
+    let pubkey_hex = hex::encode(secret_key.public_key().as_bytes());
 
     let mut executor = Executor::new(&executor_name, &executor_id, "node-agent", colony_name);
-    executor
-        .capabilities
-        .software
-        .push(pubkey_software(&identity));
+    executor.capabilities.software.push(Software {
+        name: "pubkey".into(),
+        software_type: pubkey_hex.clone(),
+        version: String::new(),
+    });
 
     colonyos::add_executor(&executor, prvkey).await?;
     colonyos::approve_executor(colony_name, &executor_name, prvkey).await?;
-    println!("Executor registered with pubkey: {}", identity.to_public());
+    println!("Executor registered with pubkey: {pubkey_hex}");
 
-    let result = run_loop(colony_name, &exec_prvkey, &identity, &docker).await;
+    let result = run_loop(colony_name, &exec_prvkey, &secret_key, &docker).await;
 
     println!("Removing executor...");
     colonyos::remove_executor(colony_name, &executor_name, prvkey).await?;
@@ -64,7 +59,7 @@ pub async fn run_executor(docker: Docker) -> Result<()> {
 async fn run_loop(
     colony_name: &str,
     prvkey: &str,
-    identity: &x25519::Identity,
+    secret_key: &SecretKey,
     docker: &Docker,
 ) -> Result<()> {
     loop {
@@ -78,20 +73,34 @@ async fn run_loop(
                     Ok(process) => {
                         println!("Assigned process: {}", process.processid);
                         let res: Result<Vec<String>> = match process.spec.funcname.as_str() {
-                            "spawn" => spawn(process.spec.kwargs, identity, docker).await,
-                            "kill"  => kill(process.spec.kwargs, docker).await,
-                            "list"  => list(process.spec.kwargs, docker).await,
+                            "spawn"  => spawn(process.spec.kwargs, secret_key, docker).await,
+                            "kill"   => kill(process.spec.kwargs, docker).await,
+                            "list"   => list(process.spec.kwargs, docker).await,
+                            "ensure"        => ensure(process.spec.kwargs, secret_key, docker).await,
+                            "ensure_stack"  => ensure_stack(process.spec.kwargs, secret_key, docker).await,
                             _ => Err(anyhow::anyhow!("Unknown function: {}", process.spec.funcname)),
                         };
                         match res {
                             Ok(out) => {
-                                colonyos::set_output(&process.processid, out, prvkey).await?;
-                                colonyos::close(&process.processid, prvkey).await?;
-                                println!("Process completed successfully");
+                                if let Err(e) =
+                                    colonyos::set_output(&process.processid, out, prvkey).await
+                                {
+                                    eprintln!("Failed to set output: {e}");
+                                } else if let Err(e) =
+                                    colonyos::close(&process.processid, prvkey).await
+                                {
+                                    eprintln!("Failed to close process: {e}");
+                                } else {
+                                    println!("Process completed successfully");
+                                }
                             }
                             Err(e) => {
-                                colonyos::fail(&process.processid, prvkey).await?;
-                                eprintln!("{e}");
+                                eprintln!("Process {} failed: {e}", process.processid);
+                                if let Err(fail_err) =
+                                    colonyos::fail(&process.processid, prvkey).await
+                                {
+                                    eprintln!("Failed to mark process as failed: {fail_err}");
+                                }
                             }
                         }
                     }

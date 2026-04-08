@@ -28,6 +28,7 @@ pub struct DiskMetrics {
 
 #[derive(Debug, Serialize)]
 pub struct SystemMetrics {
+    pub node_name: String,
     pub cpu: CpuMetrics,
     pub memory: MemoryMetrics,
     pub disks: Vec<DiskMetrics>,
