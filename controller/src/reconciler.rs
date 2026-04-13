@@ -81,7 +81,6 @@ struct StackStatus {
 // --- Encryption helpers ---
 
 fn unseal_env(sealed_b64: &str, secret_key: &SecretKey) -> Result<Vec<String>> {
-    println!("Controller: decrypting env (sealed len={})", sealed_b64.len());
     let sealed = B64.decode(sealed_b64)?;
     if sealed.len() < 56 {
         anyhow::bail!("sealed env too short ({} bytes)", sealed.len());
@@ -100,7 +99,6 @@ fn unseal_env(sealed_b64: &str, secret_key: &SecretKey) -> Result<Vec<String>> {
         .decrypt(&nonce, ciphertext)
         .map_err(|e| anyhow!("decryption failed: {e}"))?;
     let env: Vec<String> = serde_json::from_slice(&plaintext)?;
-    println!("Controller: decrypted env: {} entries", env.len());
     Ok(env)
 }
 
@@ -117,9 +115,7 @@ fn seal_env(env: &[String], recipient_pubkey: &PublicKey) -> Result<String> {
     sealed.extend_from_slice(ephemeral_public.as_bytes());
     sealed.extend_from_slice(&nonce);
     sealed.extend_from_slice(&ciphertext);
-    let b64 = B64.encode(&sealed);
-    println!("Controller: encrypted env ({} entries) for node → {} bytes", env.len(), b64.len());
-    Ok(b64)
+    Ok(B64.encode(&sealed))
 }
 
 fn get_node_pubkey(node: &Executor) -> Result<PublicKey> {
@@ -238,10 +234,17 @@ fn read_stack_status(bp: &Blueprint, name: &str) -> Result<Option<StackStatus>> 
         .map(Some)
 }
 
-async fn write_component_status(bp: &Blueprint, name: &str, value: Value) -> Result<()> {
-    let mut status = bp.status.clone();
-    status.insert(name.to_string(), value);
-    colonyos::update_blueprint_status("dev", &bp.metadata.name, status, exec_prvkey())
+// Writes a single component's status, using current_status as the base so that
+// concurrent component writes within the same reconcile pass don't overwrite
+// each other's updates.
+async fn write_component_status(
+    bp_name: &str,
+    current_status: &mut HashMap<String, Value>,
+    name: &str,
+    value: Value,
+) -> Result<()> {
+    current_status.insert(name.to_string(), value);
+    colonyos::update_blueprint_status("dev", bp_name, current_status.clone(), exec_prvkey())
         .await
         .context("failed to update blueprint status")
 }
@@ -339,30 +342,55 @@ async fn reconcile_container(
     bp: &Blueprint,
     spec: &ContainerSpec,
     scheduler: &dyn ContainerScheduler,
+    current_status: &mut HashMap<String, Value>,
 ) -> Result<()> {
     let previous = read_container_status(bp, &spec.name)?;
     let mut containers = previous.clone();
     let actual = containers.len() as u32;
     let desired = spec.replicas;
 
-    println!("  Container {} actual={actual} desired={desired}", spec.name);
+    println!(
+        "[{}] container '{}': reconciling (image={} actual={} desired={})",
+        bp.metadata.name, spec.name, spec.image, actual, desired
+    );
 
     let nodes = approved_nodes().await?;
 
     if actual < desired {
         let node_names = scheduler.scale_up(&nodes, &containers, desired - actual)?;
+        println!(
+            "[{}] container '{}': scaling up {} → {} (nodes: {})",
+            bp.metadata.name, spec.name, actual, desired,
+            node_names.join(", ")
+        );
         containers.extend(node_names.into_iter().map(|node_name| ContainerStatus {
             container_id: None,
             node_name,
         }));
-        write_component_status(bp, &spec.name, serde_json::to_value(&containers)?).await?;
+        write_component_status(&bp.metadata.name, current_status, &spec.name, serde_json::to_value(&containers)?).await?;
     } else if actual > desired {
+        println!(
+            "[{}] container '{}': scaling down {} → {}",
+            bp.metadata.name, spec.name, actual, desired
+        );
         containers = scheduler.scale_down(containers, desired);
     }
 
     let updated = ensure_container_nodes(bp, spec, &containers, &previous, &nodes).await?;
-    write_component_status(bp, &spec.name, serde_json::to_value(&updated)?).await?;
+    write_component_status(&bp.metadata.name, current_status, &spec.name, serde_json::to_value(&updated)?).await?;
 
+    println!(
+        "[{}] container '{}': OK ({}/{} replica(s))",
+        bp.metadata.name, spec.name, updated.len(), desired
+    );
+    for (i, c) in updated.iter().enumerate() {
+        println!(
+            "[{}] container '{}':   replica {} → node={} id={}",
+            bp.metadata.name, spec.name, i,
+            c.node_name,
+            c.container_id.as_deref().unwrap_or("pending"),
+        );
+    }
     Ok(())
 }
 
@@ -370,29 +398,29 @@ async fn reconcile_stack(
     bp: &Blueprint,
     spec: &StackSpec,
     scheduler: &dyn StackScheduler,
+    current_status: &mut HashMap<String, Value>,
 ) -> Result<()> {
     let current = read_stack_status(bp, &spec.name)?;
     let nodes = approved_nodes().await?;
+
+    println!(
+        "[{}] stack '{}': reconciling ({} service(s))",
+        bp.metadata.name, spec.name, spec.services.len()
+    );
 
     let (node_name, existing) = if let Some(ref s) = current {
         if nodes.iter().any(|n| n.executorname == s.node_name) {
             (s.node_name.clone(), s.containers.clone())
         } else {
             println!(
-                "  Stack {}: node {} unavailable, rescheduling (volumes will be lost)",
-                spec.name, s.node_name
+                "[{}] stack '{}': node {} unavailable, rescheduling",
+                bp.metadata.name, spec.name, s.node_name
             );
             (scheduler.pick_node(&nodes)?, vec![])
         }
     } else {
         (scheduler.pick_node(&nodes)?, vec![])
     };
-
-    println!(
-        "  Stack {} → node={node_name} services={}",
-        spec.name,
-        spec.services.len()
-    );
 
     // Re-encrypt service env fields for the target node
     let target_node = nodes.iter().find(|n| n.executorname == node_name);
@@ -441,6 +469,11 @@ async fn reconcile_stack(
         ),
     ]);
 
+    println!(
+        "[{}] stack '{}': ensuring {} service(s) on {}",
+        bp.metadata.name, spec.name, spec.services.len(), node_name
+    );
+
     let proc = colonyos::submit(&fn_spec, exec_prvkey).await?;
     colonyos::subscribe_process(&proc, SUCCESS, 300, exec_prvkey).await?;
     let proc = colonyos::get_process(&proc.processid, exec_prvkey).await?;
@@ -453,8 +486,12 @@ async fn reconcile_stack(
         serde_json::from_str(&s).context("failed to deserialize ensure_stack response")?;
 
     let stack_status = StackStatus { node_name, containers: updated };
-    write_component_status(bp, &spec.name, serde_json::to_value(&stack_status)?).await?;
+    write_component_status(&bp.metadata.name, current_status, &spec.name, serde_json::to_value(&stack_status)?).await?;
 
+    println!(
+        "[{}] stack '{}': OK ({} service(s) on {})",
+        bp.metadata.name, spec.name, stack_status.containers.len(), stack_status.node_name
+    );
     Ok(())
 }
 
@@ -500,12 +537,28 @@ pub async fn reconcile(proc: &Process) -> Result<Vec<String>> {
         let components = get_components(bp)?;
         println!("RECONCILE {}: {} component(s)", bp.metadata.name, components.len());
 
+        // current_status accumulates all writes within this reconcile pass so that
+        // each component's write includes updates from previously-reconciled components.
+        let mut current_status = bp.status.clone();
+
         for component in &components {
-            match component {
+            let component_name = match component {
+                Component::Container(s) => s.name.as_str(),
+                Component::Stack(s) => s.name.as_str(),
+            };
+
+            let result = match component {
                 Component::Container(spec) => {
-                    reconcile_container(bp, spec, &container_scheduler).await?
+                    reconcile_container(bp, spec, &container_scheduler, &mut current_status).await
                 }
-                Component::Stack(spec) => reconcile_stack(bp, spec, &stack_scheduler).await?,
+                Component::Stack(spec) => {
+                    reconcile_stack(bp, spec, &stack_scheduler, &mut current_status).await
+                }
+            };
+
+            if let Err(ref e) = result {
+                println!("[{}] '{}': FAILED - {e}", bp.metadata.name, component_name);
+                result?;
             }
         }
     }
@@ -543,6 +596,8 @@ async fn cleanup_container(bp: &Blueprint, spec: &ContainerSpec) -> Result<()> {
         return Ok(());
     }
 
+    println!("[{}] container '{}': cleaning up", bp.metadata.name, spec.name);
+
     let nodes: std::collections::HashSet<String> =
         containers.iter().map(|c| c.node_name.clone()).collect();
 
@@ -578,6 +633,7 @@ async fn cleanup_container(bp: &Blueprint, spec: &ContainerSpec) -> Result<()> {
     });
 
     try_join_all(futures).await?;
+    println!("[{}] container '{}': cleaned up", bp.metadata.name, spec.name);
     Ok(())
 }
 
@@ -585,6 +641,8 @@ async fn cleanup_stack(bp: &Blueprint, spec: &StackSpec) -> Result<()> {
     let Some(status) = read_stack_status(bp, &spec.name)? else {
         return Ok(());
     };
+
+    println!("[{}] stack '{}': cleaning up", bp.metadata.name, spec.name);
 
     let exec_prvkey = exec_prvkey();
     let mut fn_spec = FunctionSpec::new("ensure_stack", "node-agent", "dev");
@@ -619,6 +677,7 @@ async fn cleanup_stack(bp: &Blueprint, spec: &StackSpec) -> Result<()> {
 
     let proc = colonyos::submit(&fn_spec, exec_prvkey).await?;
     colonyos::subscribe_process(&proc, SUCCESS, 120, exec_prvkey).await?;
+    println!("[{}] stack '{}': cleaned up", bp.metadata.name, spec.name);
     Ok(())
 }
 

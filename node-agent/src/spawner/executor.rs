@@ -7,14 +7,16 @@ use crypto_box::SecretKey;
 
 use tokio::signal;
 
-const KEY_PATH: &str = ".colony/node.key";
+const KEY_PATH: &str = "/var/lib/colonyos/node-agent/node.key";
 
 fn load_or_generate_key() -> Result<SecretKey> {
     if let Ok(hex_str) = std::fs::read_to_string(KEY_PATH) {
         let bytes: [u8; 32] = hex::decode(hex_str.trim())?
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid key length in {KEY_PATH}"))?;
+
         println!("Loaded encryption key from {KEY_PATH}");
+
         Ok(SecretKey::from(bytes))
     } else {
         use crypto_box::aead::OsRng;
@@ -22,37 +24,39 @@ fn load_or_generate_key() -> Result<SecretKey> {
         if let Some(parent) = std::path::Path::new(KEY_PATH).parent() {
             std::fs::create_dir_all(parent)?;
         }
+
         std::fs::write(KEY_PATH, hex::encode(secret.to_bytes()))?;
         println!("Generated encryption key, saved to {KEY_PATH}");
+
         Ok(secret)
     }
 }
 
 pub async fn run_executor(docker: Docker) -> Result<()> {
     let executor_name = format!("node-agent-{}", hostname::get()?.to_string_lossy());
-    let colony_name = "dev";
-    let prvkey = "ba949fa134981372d6da62b6a56f336ab4d843b22c02a4257dcf7d0d73097514";
+    let colony_name = std::env::var("COLONY").expect("COLONY env var not set");
+    let prvkey = std::env::var("COLONY_PRIVATE_KEY").expect("COLONY_PRIVATE_KEY env var not set");
     let exec_prvkey = colonyos::crypto::gen_prvkey();
     let executor_id = colonyos::crypto::gen_id(&exec_prvkey);
 
     let secret_key = load_or_generate_key()?;
     let pubkey_hex = hex::encode(secret_key.public_key().as_bytes());
 
-    let mut executor = Executor::new(&executor_name, &executor_id, "node-agent", colony_name);
+    let mut executor = Executor::new(&executor_name, &executor_id, "node-agent", &colony_name);
     executor.capabilities.software.push(Software {
         name: "pubkey".into(),
         software_type: pubkey_hex.clone(),
         version: String::new(),
     });
 
-    colonyos::add_executor(&executor, prvkey).await?;
-    colonyos::approve_executor(colony_name, &executor_name, prvkey).await?;
+    colonyos::add_executor(&executor, &prvkey).await?;
+    colonyos::approve_executor(&colony_name, &executor_name, &prvkey).await?;
     println!("Executor registered with pubkey: {pubkey_hex}");
 
-    let result = run_loop(colony_name, &exec_prvkey, &secret_key, &docker).await;
+    let result = run_loop(&colony_name, &exec_prvkey, &secret_key, &docker).await;
 
     println!("Removing executor...");
-    colonyos::remove_executor(colony_name, &executor_name, prvkey).await?;
+    colonyos::remove_executor(&colony_name, &executor_name, &prvkey).await?;
     result
 }
 

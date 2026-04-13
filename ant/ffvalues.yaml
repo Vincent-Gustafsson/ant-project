@@ -1,0 +1,18 @@
+tunnel_token: "eyJhIjoiNzJlZjVmY2Q2NjBjODIyMDAwN2ZmN2Y5OGRhZGZhNzAiLCJ0IjoiNjRmZGUwNDQtMjVhYi00MjNhLTkxMzAtYmY5NTcyMjg2YWM2IiwicyI6IllXVTBOV1F5TUdZdFpETTNNeTAwWmpoaExUaGhZMkV0TldZeFptUTVOMlV6TUdGaSJ9" # single token, routing done in CF dashboard
+
+colonies_server: "colony.colonypm.xyz"
+colony_name: "dev"
+colony_prvkey: "ba949fa134981372d6da62b6a56f336ab4d843b22c02a4257dcf7d0d73097514"
+
+# Public URL exposed by the tunnel for MinIO (routed to minio:9000 internally)
+minio_endpoint: "https://minio.colonypm.xxx"
+minio_access_key: "minioadmin"
+minio_secret_key: "minioadmin"
+
+# Public URL exposed by the tunnel for the backend (routed to backend:3000 internally)
+backend_url: "https://ffmpegback.colonypm.xxx"
+
+backend_image: "ghcr.io/ant-pm/ffmpeg-backend:latest"
+dashboard_image: "ghcr.io/ant-pm/ffmpeg-dashboard:latest"
+worker_image: "ghcr.io/ant-pm/ffmpeg-worker:latest"
+replicas: 4

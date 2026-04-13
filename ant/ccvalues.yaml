@@ -1,0 +1,9 @@
+tunnel_token: "eyJhIjoiNzJlZjVmY2Q2NjBjODIyMDAwN2ZmN2Y5OGRhZGZhNzAiLCJ0IjoiOWE5MjNkNDItODYwOS00YWNmLTlkNTctNGFhNjk3Yjk1ODM1IiwicyI6Ik5HWmlOekJoTVdVdE5XVXhOaTAwWVRsa0xUaG1abUV0TWpJMU9UWTJabU14TkRObSJ9"
+colonies_server: "colony.colonypm.xyz"
+colony_name: "dev"
+executor_prvkey: "ba949fa134981372d6da62b6a56f336ab4d843b22c02a4257dcf7d0d73097514"
+minio_endpoint: "https://antcc.colonypm.xxx"
+minio_access_key: "antcc"
+minio_secret_key: "anntccpass"
+minio_bucket: "antcc"
+replicas: 10
